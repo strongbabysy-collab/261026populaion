@@ -1,11 +1,411 @@
 <!DOCTYPE html>
 <html lang="ko">
 <head>
-  <meta charset="UTF-8">
-  <title>우리 동네 인구 구조</title>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>동네별 인구 조회</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Noto Sans KR", sans-serif;
+      background: #f7f8fa;
+      color: #111;
+    }
+    .container {
+      max-width: 760px;
+      margin: 48px auto;
+      padding: 24px;
+    }
+    h1 {
+      margin: 0 0 12px;
+      font-size: 28px;
+    }
+    p.desc {
+      margin: 0 0 24px;
+      color: #555;
+      line-height: 1.6;
+    }
+    .search-box {
+      display: grid;
+      gap: 12px;
+      margin-bottom: 24px;
+    }
+    input[type="text"] {
+      width: 100%;
+      padding: 14px 16px;
+      font-size: 16px;
+      border: 1px solid #cfd6dd;
+      border-radius: 10px;
+      outline: none;
+      background: white;
+    }
+    input[type="text"]:focus {
+      border-color: #3b82f6;
+    }
+    .status {
+      font-size: 14px;
+      color: #666;
+      min-height: 20px;
+    }
+    .results {
+      border: 1px solid #e2e8f0;
+      border-radius: 10px;
+      background: white;
+      max-height: 320px;
+      overflow-y: auto;
+      display: none;
+    }
+    .result-item {
+      padding: 12px 16px;
+      cursor: pointer;
+      border-bottom: 1px solid #f1f5f9;
+    }
+    .result-item:last-child {
+      border-bottom: none;
+    }
+    .result-item:hover,
+    .result-item.active {
+      background: #eff6ff;
+    }
+    .card {
+      margin-top: 20px;
+      background: white;
+      border: 1px solid #e2e8f0;
+      border-radius: 14px;
+      padding: 24px;
+      display: none;
+    }
+    .place-name {
+      font-size: 24px;
+      font-weight: 700;
+      margin-bottom: 20px;
+    }
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 16px;
+    }
+    .stat {
+      border: 1px solid #e5e7eb;
+      border-radius: 12px;
+      padding: 18px;
+      background: #fafafa;
+    }
+    .stat-label {
+      font-size: 14px;
+      color: #666;
+      margin-bottom: 8px;
+    }
+    .stat-value {
+      font-size: 28px;
+      font-weight: 700;
+    }
+    .error {
+      color: #b91c1c;
+    }
+    @media (max-width: 640px) {
+      .container {
+        margin: 24px auto;
+        padding: 16px;
+      }
+      .stats {
+        grid-template-columns: 1fr;
+      }
+      .stat-value {
+        font-size: 24px;
+      }
+    }
+  </style>
 </head>
 <body>
-  <h1>🏘️ 우리 동네 인구 구조</h1>
-  <p>곧 우리 동네 인구 데이터가 여기에 나타납니다! (레벨 2에서 만들어요)</p>
+  <div class="container">
+    <h1>동네별 인구 조회</h1>
+    <p class="desc">
+      동네 이름을 검색한 뒤 목록에서 선택하면 총인구, 남자 인구, 여자 인구를 보여 줍니다.
+    </p>
+
+    <div class="search-box">
+      <input id="searchInput" type="text" placeholder="예: 사직동, 중계1동, 서초1동" />
+      <div id="status" class="status">데이터를 불러오는 중입니다...</div>
+      <div id="results" class="results"></div>
+    </div>
+
+    <div id="card" class="card">
+      <div id="placeName" class="place-name"></div>
+      <div class="stats">
+        <div class="stat">
+          <div class="stat-label">총인구</div>
+          <div id="totalPop" class="stat-value">-</div>
+        </div>
+        <div class="stat">
+          <div class="stat-label">남자 인구</div>
+          <div id="malePop" class="stat-value">-</div>
+        </div>
+        <div class="stat">
+          <div class="stat-label">여자 인구</div>
+          <div id="femalePop" class="stat-value">-</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const CSV_URL = "https://raw.githubusercontent.com/greatsong/modudata/main/data/population_latest.csv";
+
+    const searchInput = document.getElementById("searchInput");
+    const statusEl = document.getElementById("status");
+    const resultsEl = document.getElementById("results");
+    const cardEl = document.getElementById("card");
+    const placeNameEl = document.getElementById("placeName");
+    const totalPopEl = document.getElementById("totalPop");
+    const malePopEl = document.getElementById("malePop");
+    const femalePopEl = document.getElementById("femalePop");
+
+    let rows = [];
+    let filteredRows = [];
+    let activeIndex = -1;
+
+    function stripCodeFromName(name) {
+      return String(name || "").replace(/$\d+$\s*$/, "").trim();
+    }
+
+    function parseNumber(value) {
+      if (value == null) return 0;
+      const cleaned = String(value).replace(/,/g, "").trim();
+      if (cleaned === "") return 0;
+      const num = Number(cleaned);
+      return Number.isFinite(num) ? num : 0;
+    }
+
+    function formatNumber(num) {
+      return num.toLocaleString("ko-KR");
+    }
+
+    function parseCsvLine(line) {
+      const result = [];
+      let current = "";
+      let inQuotes = false;
+
+      for (let i = 0; i < line.length; i++) {
+        const char = line[i];
+        const next = line[i + 1];
+
+        if (char === '"') {
+          if (inQuotes && next === '"') {
+            current += '"';
+            i++;
+          } else {
+            inQuotes = !inQuotes;
+          }
+        } else if (char === "," && !inQuotes) {
+          result.push(current);
+          current = "";
+        } else {
+          current += char;
+        }
+      }
+
+      result.push(current);
+      return result;
+    }
+
+    function parseCsv(text) {
+      const lines = text
+        .replace(/\r\n/g, "\n")
+        .replace(/\r/g, "\n")
+        .split("\n")
+        .filter(line => line.trim() !== "");
+
+      if (lines.length === 0) return [];
+
+      const headers = parseCsvLine(lines[0]);
+      const data = [];
+
+      for (let i = 1; i < lines.length; i++) {
+        const values = parseCsvLine(lines[i]);
+        const row = {};
+
+        headers.forEach((header, idx) => {
+          row[header] = values[idx] ?? "";
+        });
+
+        data.push(row);
+      }
+
+      return data;
+    }
+
+    function findRegionColumn(sampleRow) {
+      const keys = Object.keys(sampleRow || {});
+      const candidates = [
+        "행정구역",
+        "지역",
+        "동별",
+        "행정기관",
+        "구분"
+      ];
+
+      for (const key of candidates) {
+        if (keys.includes(key)) return key;
+      }
+
+      return keys[0] || null;
+    }
+
+    function findPopulationColumns(sampleRow) {
+      const keys = Object.keys(sampleRow || {});
+
+      const totalCol = keys.find(key => /총인구수$/.test(key) && !/_남_/.test(key) && !/_여_/.test(key));
+      const maleTotalCol = keys.find(key => /_남_총인구수$/.test(key));
+      const femaleTotalCol = keys.find(key => /_여_총인구수$/.test(key));
+
+      return { totalCol, maleTotalCol, femaleTotalCol };
+    }
+
+    function showResults(items) {
+      resultsEl.innerHTML = "";
+      activeIndex = -1;
+
+      if (!items.length) {
+        resultsEl.style.display = "none";
+        return;
+      }
+
+      items.forEach((item, index) => {
+        const div = document.createElement("div");
+        div.className = "result-item";
+        div.textContent = item.displayName;
+        div.addEventListener("click", () => selectRegion(item));
+        resultsEl.appendChild(div);
+      });
+
+      resultsEl.style.display = "block";
+    }
+
+    function updateActiveItem() {
+      const children = [...resultsEl.children];
+      children.forEach((el, idx) => {
+        el.classList.toggle("active", idx === activeIndex);
+      });
+    }
+
+    function selectRegion(item) {
+      placeNameEl.textContent = item.displayName;
+      totalPopEl.textContent = formatNumber(item.total);
+      malePopEl.textContent = formatNumber(item.male);
+      femalePopEl.textContent = formatNumber(item.female);
+      cardEl.style.display = "block";
+      resultsEl.style.display = "none";
+      searchInput.value = item.displayName;
+      statusEl.textContent = "선택한 동네의 인구를 표시했습니다.";
+    }
+
+    function searchRegions(keyword) {
+      const q = keyword.trim().toLowerCase();
+
+      if (!q) {
+        filteredRows = [];
+        showResults([]);
+        statusEl.textContent = `동네 이름을 입력해 주세요. 전체 데이터: ${rows.length.toLocaleString("ko-KR")}건`;
+        return;
+      }
+
+      filteredRows = rows.filter(row => row.displayName.toLowerCase().includes(q)).slice(0, 50);
+
+      if (filteredRows.length === 0) {
+        showResults([]);
+        statusEl.textContent = "검색 결과가 없습니다.";
+      } else {
+        showResults(filteredRows);
+        statusEl.textContent = `${filteredRows.length}건 찾았습니다.`;
+      }
+    }
+
+    async function loadData() {
+      try {
+        const response = await fetch(CSV_URL);
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+
+        const buffer = await response.arrayBuffer();
+        const decoder = new TextDecoder("euc-kr");
+        const text = decoder.decode(buffer);
+        const rawRows = parseCsv(text);
+
+        if (!rawRows.length) {
+          throw new Error("CSV 데이터가 비어 있습니다.");
+        }
+
+        const regionCol = findRegionColumn(rawRows[0]);
+        const { totalCol, maleTotalCol, femaleTotalCol } = findPopulationColumns(rawRows[0]);
+
+        if (!regionCol || !maleTotalCol || !femaleTotalCol) {
+          throw new Error("필요한 열을 찾지 못했습니다.");
+        }
+
+        rows = rawRows
+          .map(row => {
+            const fullName = row[regionCol] || "";
+            const displayName = stripCodeFromName(fullName);
+            const total = totalCol ? parseNumber(row[totalCol]) : parseNumber(row[maleTotalCol]) + parseNumber(row[femaleTotalCol]);
+            const male = parseNumber(row[maleTotalCol]);
+            const female = parseNumber(row[femaleTotalCol]);
+
+            return {
+              fullName,
+              displayName,
+              total,
+              male,
+              female
+            };
+          })
+          .filter(row => row.displayName);
+
+        statusEl.textContent = `데이터를 불러왔습니다. 동네 이름을 검색해 주세요. 총 ${rows.length.toLocaleString("ko-KR")}건`;
+      } catch (error) {
+        console.error(error);
+        statusEl.innerHTML = `<span class="error">데이터를 불러오지 못했습니다: ${error.message}</span>`;
+      }
+    }
+
+    searchInput.addEventListener("input", (e) => {
+      searchRegions(e.target.value);
+    });
+
+    searchInput.addEventListener("keydown", (e) => {
+      if (!filteredRows.length || resultsEl.style.display === "none") return;
+
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        activeIndex = Math.min(activeIndex + 1, filteredRows.length - 1);
+        updateActiveItem();
+      } else if (e.key === "ArrowUp") {
+        e.preventDefault();
+        activeIndex = Math.max(activeIndex - 1, 0);
+        updateActiveItem();
+      } else if (e.key === "Enter") {
+        if (activeIndex >= 0 && filteredRows[activeIndex]) {
+          e.preventDefault();
+          selectRegion(filteredRows[activeIndex]);
+        }
+      }
+    });
+
+    document.addEventListener("click", (e) => {
+      if (!resultsEl.contains(e.target) && e.target !== searchInput) {
+        resultsEl.style.display = "none";
+      }
+    });
+
+    searchInput.addEventListener("focus", () => {
+      if (filteredRows.length) {
+        resultsEl.style.display = "block";
+      }
+    });
+
+    loadData();
+  </script>
 </body>
 </html>
